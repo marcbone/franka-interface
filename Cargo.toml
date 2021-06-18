@@ -1,0 +1,52 @@
+[package]
+name = "franka-interface"
+version = "0.1.0"
+authors = ["Marco Boneberger <m.boneberger@tu-bs.de>"]
+edition = "2018"
+license = "EUPL-1.2"
+description = "Devlop software for Franka Emika Panda robots in simulation and run it on the real robot"
+categories = ["science::robotics", "simulation"]
+keywords = ["franka", "emika", "panda", "libfranka"]
+readme = "README.md"
+repository = "https://github.com/marcbone/franka-interface"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.dev]
+opt-level = 3
+
+[lib]
+name = "franka_interface"
+path = "src/lib.rs"
+
+[[example]]
+name = "hello_world"
+path = "examples/hello_world.rs"
+
+[[example]]
+name = "cartesian_space_controller_without_mass_matrix"
+path = "examples/cartesian_space_controller_without_mass_matrix.rs"
+
+[[example]]
+name = "cartesian_space_controller"
+path = "examples/cartesian_space_controller.rs"
+
+[[example]]
+name = "joint_space_controller_without_mass_matrix"
+path = "examples/joint_space_controller_without_mass_matrix.rs"
+
+[[example]]
+name = "joint_space_controller"
+path = "examples/joint_space_controller.rs"
+
+[[example]]
+name = "simple_inverse_kinematics_solver"
+path = "examples/simple_inverse_kinematics_solver.rs"
+
+[dependencies]
+nalgebra = "0.23"
+libfranka-rs = "0.8.0-alpha-2"
+rubullet = "0.1.0-alpha-3"
+
+[dev-dependencies]
+rand = "0.8.0"
+rand_distr = "0.4.0"
+structopt = "0.3"
