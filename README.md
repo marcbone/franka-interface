@@ -1,3 +1,8 @@
+[![crates.io](https://img.shields.io/crates/v/franka-interface.svg)](https://crates.io/crates/franka-interface)
+![GitHub Workflow Status](https://img.shields.io/github/workflow/status/marcbone/franka-interface/Rust)
+[![crates.io](https://img.shields.io/crates/l/franka-interface.svg)](https://crates.io/crates/franka-interface)
+[![crates.io](https://img.shields.io/crates/d/franka-interface.svg)](https://crates.io/crates/franka-interface)
+[![docs.rs](https://docs.rs/franka-interface/badge.svg)](https://docs.rs/franka-interface)
 # franka-interface
 
 franka-interface allows developing software for controlling Franka Emika Panda robots in simulation and then run it on
