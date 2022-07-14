@@ -1,6 +1,7 @@
 // Copyright (c) 2021 Marco Boneberger
 // Licensed under the EUPL-1.2-or-later
 use std::cell::RefCell;
+use std::convert::TryInto;
 use std::f64::consts::PI;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -333,7 +334,7 @@ pub struct RobotArguments {
     pub base_pose: Option<Isometry3<f64>>,
     /// Initial joint configuration of the robot The last two are the gripper positions.
     /// Only needed for the simulation. Default it the home pose.
-    pub initial_config: Option<[f64; 9]>,
+    pub initial_config: Option<[f64; FrankaSim::PANDA_NUM_TOTAL_DOFS]>,
 }
 
 pub(crate) trait FrankaInterface {
@@ -496,10 +497,13 @@ pub struct FrankaSim {
     /// pose of the robot base relative to the world frame
     pub base_pose: Isometry3<f64>,
     pub joint_friction_force: f64,
+    pub robot_joint_indices: [usize; FrankaSim::PANDA_NUM_DOFS],
+    pub gripper_joint_indices: [usize; FrankaSim::GRIPPER_JOINT_NAMES.len()],
+    pub end_effector_link_index: usize,
 }
 
 impl FrankaSim {
-    const INITIAL_JOINT_POSITIONS: [f64; 9] = [
+    const INITIAL_JOINT_POSITIONS: [f64; FrankaSim::PANDA_NUM_TOTAL_DOFS] = [
         0.,
         -PI / 4.,
         0.,
@@ -511,14 +515,26 @@ impl FrankaSim {
         0.02,
     ];
     const PANDA_NUM_DOFS: usize = 7;
-    const PANDA_END_EFFECTOR_INDEX: usize = 11;
     const GRIPPER_OPEN_WIDTH: f64 = 0.08;
+    const ROBOT_JOINT_NAMES: [&'static str; FrankaSim::PANDA_NUM_DOFS] = [
+        "panda_joint1",
+        "panda_joint2",
+        "panda_joint3",
+        "panda_joint4",
+        "panda_joint5",
+        "panda_joint6",
+        "panda_joint7",
+    ];
+    const GRIPPER_JOINT_NAMES: [&'static str; 2] = ["panda_finger_joint1", "panda_finger_joint2"];
+    const END_EFFECTOR_LINK_NAME: &'static str = "panda_grasptarget";
+    const PANDA_NUM_TOTAL_DOFS: usize =
+        FrankaSim::PANDA_NUM_DOFS + FrankaSim::GRIPPER_JOINT_NAMES.len();
 }
 
 pub(crate) struct FrankaSimWithoutClient {
     pub urdf_path: PathBuf,
     pub base_pose: Option<Isometry3<f64>>,
-    pub initial_config: Option<[f64; 9]>,
+    pub initial_config: Option<[f64; FrankaSim::PANDA_NUM_TOTAL_DOFS]>,
 }
 
 impl FrankaSim {
@@ -567,7 +583,63 @@ impl FrankaSim {
                 ..Default::default()
             },
         );
-        for i in 0..7 {
+        let mut robot_joint_indices: [Option<usize>; Self::PANDA_NUM_DOFS] =
+            [None; Self::PANDA_NUM_DOFS];
+        let mut gripper_joint_indices = [None; Self::GRIPPER_JOINT_NAMES.len()];
+        let mut end_effector_link_index = None;
+        let num_joints = physics_client.borrow_mut().get_num_joints(panda_id);
+        for i in 0..num_joints {
+            let joint_info = physics_client.borrow_mut().get_joint_info(panda_id, i);
+            let joint_name = joint_info.joint_name;
+            if let Some(joint_index) = FrankaSim::ROBOT_JOINT_NAMES
+                .iter()
+                .position(|&x| x == joint_name)
+            {
+                robot_joint_indices[joint_index] = Some(i);
+            }
+            if let Some(joint_index) = FrankaSim::GRIPPER_JOINT_NAMES
+                .iter()
+                .position(|&x| x == joint_name)
+            {
+                gripper_joint_indices[joint_index] = Some(i);
+            }
+            if joint_info.link_name == FrankaSim::END_EFFECTOR_LINK_NAME {
+                end_effector_link_index = Some(i);
+            }
+        }
+        let end_effector_link_index = end_effector_link_index.unwrap_or_else(|| {
+            panic!(
+                "Could not find end-effector link: \"{}\" in URDF",
+                FrankaSim::END_EFFECTOR_LINK_NAME
+            )
+        });
+        fn turn_options_into_values<F: Fn(usize) -> String, const N: usize>(
+            array: [Option<usize>; N],
+            error_handler: F,
+        ) -> [usize; N] {
+            array
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x.unwrap_or_else(|| panic!("{}", error_handler(i))))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        }
+
+        let robot_joint_indices = turn_options_into_values(robot_joint_indices, |i| {
+            format!(
+                "Could not find joint: \"{}\" in URDF",
+                FrankaSim::ROBOT_JOINT_NAMES[i]
+            )
+        });
+        let gripper_joint_indices = turn_options_into_values(gripper_joint_indices, |i| {
+            format!(
+                "Could not find joint: \"{}\" in URDF",
+                FrankaSim::GRIPPER_JOINT_NAMES[i]
+            )
+        });
+
+        for i in robot_joint_indices {
             physics_client.borrow_mut().change_dynamics(
                 panda_id,
                 i,
@@ -579,8 +651,7 @@ impl FrankaSim {
         }
 
         let mut index = 0;
-        let num_joints = physics_client.borrow_mut().get_num_joints(panda_id);
-        for i in 0..num_joints {
+        for i in robot_joint_indices {
             let info = physics_client.borrow_mut().get_joint_info(panda_id, i);
             if info.joint_type == JointType::Revolute || info.joint_type == JointType::Prismatic {
                 physics_client
@@ -590,13 +661,14 @@ impl FrankaSim {
                 index += 1;
             }
         }
+
         let gripper_constraint = physics_client
             .borrow_mut()
             .create_constraint(
                 panda_id,
-                9,
+                gripper_joint_indices[0],
                 panda_id,
-                10,
+                gripper_joint_indices[1],
                 JointType::Gear,
                 [1., 0., 0.],
                 Isometry3::identity(),
@@ -619,6 +691,9 @@ impl FrankaSim {
             time_step: *time_step,
             base_pose: config.base_pose.unwrap_or_else(Isometry3::identity),
             joint_friction_force: 0.,
+            robot_joint_indices,
+            gripper_joint_indices,
+            end_effector_link_index,
         }
     }
 }
@@ -643,8 +718,8 @@ impl FrankaInterface for FrankaSim {
                 .borrow_mut()
                 .set_joint_motor_control_array(
                     self.id,
-                    &[0, 1, 2, 3, 4, 5, 6],
-                    ControlCommandArray::Positions(&joint_positions.joint_positions.as_slice()),
+                    &self.robot_joint_indices,
+                    ControlCommandArray::Positions(joint_positions.joint_positions.as_slice()),
                     None,
                 )
                 .unwrap();
@@ -666,9 +741,9 @@ impl FrankaInterface for FrankaSim {
             .borrow_mut()
             .set_joint_motor_control_array(
                 self.id,
-                &[0, 1, 2, 3, 4, 5, 6],
+                &self.robot_joint_indices,
                 ControlCommandArray::Velocities(&[0.; Self::PANDA_NUM_DOFS]),
-                Some(&[self.joint_friction_force; 7]),
+                Some(&[self.joint_friction_force; Self::PANDA_NUM_DOFS]),
             )
             .unwrap();
         let mut first_time = true;
@@ -683,8 +758,8 @@ impl FrankaInterface for FrankaSim {
             };
             let state = self.get_state();
 
-            let mut pos = [0.; 9];
-            let mut vels = [0.; 9];
+            let mut pos = [0.; FrankaSim::PANDA_NUM_TOTAL_DOFS];
+            let mut vels = [0.; FrankaSim::PANDA_NUM_TOTAL_DOFS];
             for k in 0..Self::PANDA_NUM_DOFS {
                 pos[k] = state.joint_positions_d[k];
                 vels[k] = state.joint_velocities[k];
@@ -693,12 +768,22 @@ impl FrankaInterface for FrankaSim {
             let gravity_torques = self
                 .physics_client
                 .borrow_mut()
-                .calculate_inverse_dynamics(self.id, &pos, &[0.; 9], &[0.; 9])
+                .calculate_inverse_dynamics(
+                    self.id,
+                    &pos,
+                    &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+                    &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+                )
                 .unwrap();
             let mut coriolis = self
                 .physics_client
                 .borrow_mut()
-                .calculate_inverse_dynamics(self.id, &pos, &vels, &[0.; 9])
+                .calculate_inverse_dynamics(
+                    self.id,
+                    &pos,
+                    &vels,
+                    &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+                )
                 .unwrap();
             for i in 0..Self::PANDA_NUM_DOFS {
                 coriolis[i] -= gravity_torques[i];
@@ -709,8 +794,8 @@ impl FrankaInterface for FrankaSim {
                 .borrow_mut()
                 .set_joint_motor_control_array(
                     self.id,
-                    &[0, 1, 2, 3, 4, 5, 6],
-                    ControlCommandArray::Torques(&torques.torques.as_slice()),
+                    &self.robot_joint_indices,
+                    ControlCommandArray::Torques(torques.torques.as_slice()),
                     None,
                 )
                 .unwrap();
@@ -738,7 +823,7 @@ impl FrankaInterface for FrankaSim {
             };
             let desired_world_pose = self.base_pose * pose.pose;
             let inverse_kinematics_parameters = InverseKinematicsParametersBuilder::new(
-                FrankaSim::PANDA_END_EFFECTOR_INDEX,
+                self.end_effector_link_index,
                 &desired_world_pose,
             )
             .set_max_num_iterations(50)
@@ -752,8 +837,8 @@ impl FrankaInterface for FrankaSim {
                 .borrow_mut()
                 .set_joint_motor_control_array(
                     self.id,
-                    &[0, 1, 2, 3, 4, 5, 6],
-                    ControlCommandArray::Positions(&joint_poses[0..7]),
+                    &self.robot_joint_indices,
+                    ControlCommandArray::Positions(&joint_poses[0..Self::PANDA_NUM_DOFS]),
                     None,
                 )
                 .unwrap();
@@ -773,13 +858,13 @@ impl FrankaInterface for FrankaSim {
             let start_time = Instant::now();
             client.set_joint_motor_control(
                 self.id,
-                10,
+                self.gripper_joint_indices[1],
                 ControlCommand::Position(width / 2.),
                 Some(1.),
             );
             client.set_joint_motor_control(
                 self.id,
-                9,
+                self.gripper_joint_indices[0],
                 ControlCommand::Position(width / 2.),
                 Some(1.),
             );
@@ -795,22 +880,43 @@ impl FrankaInterface for FrankaSim {
         for i in 0..steps {
             let start_time = Instant::now();
             let val = start_width * (f64::cos((i) as f64 / steps as f64 * PI) / 2.);
-            client.set_joint_motor_control(self.id, 10, ControlCommand::Position(val), Some(10.));
-            client.set_joint_motor_control(self.id, 9, ControlCommand::Position(val), Some(10.));
+            client.set_joint_motor_control(
+                self.id,
+                self.gripper_joint_indices[1],
+                ControlCommand::Position(val),
+                Some(10.),
+            );
+            client.set_joint_motor_control(
+                self.id,
+                self.gripper_joint_indices[0],
+                ControlCommand::Position(val),
+                Some(10.),
+            );
             client.step_simulation().unwrap();
             self.wait_for_next_cycle(start_time);
         }
     }
 
     fn get_state(&mut self) -> RobotState {
+        let indices = [
+            self.robot_joint_indices[0],
+            self.robot_joint_indices[1],
+            self.robot_joint_indices[2],
+            self.robot_joint_indices[3],
+            self.robot_joint_indices[4],
+            self.robot_joint_indices[5],
+            self.robot_joint_indices[6],
+            self.gripper_joint_indices[0],
+            self.gripper_joint_indices[1],
+        ]; // oh boy, we really need const generics in Rust.
         let joint_states = self
             .physics_client
             .borrow_mut()
-            .get_joint_states(self.id, &[0, 1, 2, 3, 4, 5, 6, 7, 8])
+            .get_joint_states(self.id, &indices)
             .unwrap();
-        let mut joint_positions = [0.; 9];
-        let mut joint_velocities = [0.; 9];
-        for i in 0..9 {
+        let mut joint_positions = [0.; FrankaSim::PANDA_NUM_TOTAL_DOFS];
+        let mut joint_velocities = [0.; FrankaSim::PANDA_NUM_TOTAL_DOFS];
+        for i in 0..FrankaSim::PANDA_NUM_TOTAL_DOFS {
             joint_positions[i] = joint_states[i].joint_position;
             joint_velocities[i] = joint_states[i].joint_velocity;
         }
@@ -818,7 +924,7 @@ impl FrankaInterface for FrankaSim {
         let end_effector_state = self
             .physics_client
             .borrow_mut()
-            .get_link_state(self.id, FrankaSim::PANDA_END_EFFECTOR_INDEX, true, true)
+            .get_link_state(self.id, self.end_effector_link_index, true, true)
             .unwrap();
         let end_effector_pose = self.base_pose.inverse() * end_effector_state.world_pose;
 
@@ -833,21 +939,32 @@ impl FrankaInterface for FrankaSim {
         let coriolis_force = self
             .physics_client
             .borrow_mut()
-            .calculate_inverse_dynamics(self.id, &joint_positions, &joint_velocities, &[0.; 9])
+            .calculate_inverse_dynamics(
+                self.id,
+                &joint_positions,
+                &joint_velocities,
+                &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+            )
             .unwrap();
 
         let gravity_torques = self
             .physics_client
             .borrow_mut()
-            .calculate_inverse_dynamics(self.id, &joint_positions, &[0.; 9], &[0.; 9])
+            .calculate_inverse_dynamics(
+                self.id,
+                &joint_positions,
+                &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+                &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+            )
             .unwrap();
-        let gravity = Vector7::from_column_slice(&gravity_torques[0..7]);
-        let coriolis_force = Vector7::from_column_slice(&coriolis_force[0..7]) - gravity;
+        let gravity = Vector7::from_column_slice(&gravity_torques[0..Self::PANDA_NUM_DOFS]);
+        let coriolis_force =
+            Vector7::from_column_slice(&coriolis_force[0..Self::PANDA_NUM_DOFS]) - gravity;
 
         let mut joint_positions = Vector7::zeros();
         let mut joint_velocities = Vector7::zeros();
         let mut joint_torques = Vector7::zeros();
-        for i in 0..7 {
+        for i in 0..Self::PANDA_NUM_DOFS {
             joint_positions[i] = joint_states[i].joint_position;
             joint_velocities[i] = joint_states[i].joint_velocity;
             joint_torques[i] = joint_states[i].joint_motor_torque;
@@ -874,7 +991,7 @@ impl FrankaInterface for FrankaSim {
         let width = self
             .physics_client
             .borrow_mut()
-            .get_joint_state(self.id, 9)
+            .get_joint_state(self.id, self.gripper_joint_indices[0])
             .unwrap()
             .joint_position
             * 2.;
@@ -888,20 +1005,20 @@ impl FrankaInterface for FrankaSim {
         let joint_states = self
             .physics_client
             .borrow_mut()
-            .get_joint_states(self.id, &[0, 1, 2, 3, 4, 5, 6])
+            .get_joint_states(self.id, &self.robot_joint_indices)
             .unwrap();
         let mut joint_positions = Vector7::zeros();
-        for i in 0..7 {
+        for i in 0..Self::PANDA_NUM_DOFS {
             joint_positions[i] = joint_states[i].joint_position;
         }
         self.get_jacobian_at(joint_positions)
     }
 
     fn get_jacobian_at(&mut self, q: Vector7) -> Matrix6x7 {
-        let mut pos = [0.; 9];
+        let mut pos = [0.; FrankaSim::PANDA_NUM_TOTAL_DOFS];
         let joint_positions = q;
 
-        for i in 0..7 {
+        for i in 0..Self::PANDA_NUM_DOFS {
             pos[i] = joint_positions[i];
         }
         let jac = self
@@ -909,11 +1026,11 @@ impl FrankaInterface for FrankaSim {
             .borrow_mut()
             .calculate_jacobian(
                 self.id,
-                11,
+                self.end_effector_link_index,
                 Translation3::from(Vector3::zeros()),
                 &pos,
-                &[0.; 9],
-                &[0.; 9],
+                &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
+                &[0.; FrankaSim::PANDA_NUM_TOTAL_DOFS],
             )
             .unwrap();
         Matrix6x7::from_column_slice(jac.jacobian.as_slice())
