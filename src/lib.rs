@@ -357,7 +357,7 @@ pub(crate) trait FrankaInterface {
 struct Model(franka::Model);
 impl Model {
     fn update_state_properties(&self, state: &franka::RobotState) -> RobotState {
-        let jacobian = self.0.zero_jacobian_from_state(&Frame::kEndEffector, state);
+        let jacobian = self.0.zero_jacobian_from_state(&Frame::EndEffector, state);
         let mass_matrix = self.0.mass_from_state(state);
         let coriolis_force = self.0.coriolis_from_state(state);
         let gravity = self.0.gravity_from_state(state, None);
@@ -483,7 +483,7 @@ impl FrankaInterface for FrankaReal {
         let jacobian =
             self.model
                 .0
-                .zero_jacobian(&Frame::kEndEffector, q.as_ref(), &f_t_ee, &[0.; 16]);
+                .zero_jacobian(&Frame::EndEffector, q.as_ref(), &f_t_ee, &[0.; 16]);
         Matrix6x7::from_column_slice(jacobian.as_ref())
     }
 }
