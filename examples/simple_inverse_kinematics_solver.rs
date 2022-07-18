@@ -147,7 +147,7 @@ impl Model {
         ];
         let j =
             self.model
-                .zero_jacobian(&franka::Frame::kEndEffector, q.as_ref(), &f_t_ee, &[0.; 16]);
+                .zero_jacobian(&franka::Frame::EndEffector, q.as_ref(), &f_t_ee, &[0.; 16]);
         Matrix6x7::from_column_slice(&j)
     }
     pub fn forward(&self, q: Vector7) -> Isometry3<f64> {
@@ -155,7 +155,7 @@ impl Model {
             0.7071, -0.7071, 0., 0., 0.7071, 0.7071, 0., 0., 0., 0., 1., 0., 0., 0., 0.1034, 1.,
         ];
         franka::utils::array_to_isometry(&self.model.pose(
-            &franka::Frame::kEndEffector,
+            &franka::Frame::EndEffector,
             &q.as_ref(),
             &f_t_ee,
             &[0.; 16],
