@@ -1,6 +1,6 @@
 [package]
 name = "franka-interface"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Marco Boneberger <m.boneberger@tu-bs.de>"]
 edition = "2018"
 license = "EUPL-1.2"
@@ -43,7 +43,7 @@ path = "examples/simple_inverse_kinematics_solver.rs"
 
 [dependencies]
 nalgebra = "0.23"
-libfranka-rs = "0.8.0-alpha-2"
+libfranka-rs = "0.9.0"
 rubullet = "0.1.0-alpha-3"
 
 [dev-dependencies]
